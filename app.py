@@ -22,7 +22,7 @@ if 'calc_mode' not in st.session_state:
 if 'fee_presets' not in st.session_state:
     st.session_state.fee_presets = [0, 6, 13, 15, 20]
 
-# --- 2. 데이터 로드 및 자동 세척 함수 (100% 유지) ---
+# --- 2. 데이터 로드 및 자동 세척 함수 (기본 데이터 100% 유지) ---
 def load_data(worksheet_name="A_Work"):
     try:
         existing_data = conn.read(worksheet=worksheet_name, ttl=0)
@@ -100,30 +100,37 @@ def on_data_change():
     df['순서'] = range(1, len(df) + 1)
     st.session_state.data = run_calculation_engine(df, st.session_state.calc_mode)
 
-# --- 5. 히스토리 로깅 함수 (신규) ---
+# --- 5. [수정] 완전 자동화 히스토리 엔진 ---
 def log_history(action, target_company):
     try:
+        # 현재 화면의 데이터를 복사하여 메타데이터 추가
         history_df = st.session_state.data.copy()
         history_df['작업시간'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         history_df['거래처명'] = target_company
         history_df['역할'] = st.session_state.role
         history_df['구분'] = action
         
-        # 기존 히스토리 불러와서 추가 후 저장
+        # 히스토리 시트 읽기 시도
         try:
             current_history = conn.read(worksheet="History", ttl=0)
-            new_history = pd.concat([current_history, history_df], ignore_index=True)
+            if current_history is not None and not current_history.empty:
+                # [자동화] 기존 데이터가 있다면 아래에 붙임
+                new_history = pd.concat([current_history, history_df], ignore_index=True)
+            else:
+                # [자동화] 시트가 비어있다면 현재 데이터(항목명 포함)를 그대로 사용
+                new_history = history_df
         except:
+            # [자동화] 시트를 읽지 못하거나 없는 경우에도 현재 데이터로 강제 생성 시도
             new_history = history_df
             
         conn.update(worksheet="History", data=new_history)
     except Exception as e:
-        st.error(f"히스토리 기록 실패: {str(e)}")
+        st.error(f"히스토리 자동 기록 실패: {str(e)}")
 
 # --- 6. UI 섹션: 게이트웨이 ---
 if st.session_state.role is None:
     st.title("🛡️ 프라이싱랩 프로 - 역할 선택")
-    st.info("작업하실 역할을 선택하세요. 데이터는 업체별로 격리되어 관리됩니다.")
+    st.info("작업하실 역할을 선택하세요. 히스토리 엔진이 자동 양식을 생성합니다.")
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🏢 A 업체 (공급사) 진입", use_container_width=True):
@@ -145,26 +152,26 @@ else:
             st.rerun()
         st.divider()
         
-        # [신규] 히스토리 관리 및 삭제 UI
+        # [수정] 지능형 히스토리 관리 UI
         st.subheader("📜 히스토리 관리")
         try:
             history_all = conn.read(worksheet="History", ttl=0)
-            if not history_all.empty:
+            # [자동화] 컬럼 존재 여부 및 비어있는지 체크
+            if history_all is not None and not history_all.empty and '역할' in history_all.columns:
                 my_history = history_all[history_all['역할'] == st.session_state.role]
                 if not my_history.empty:
-                    # 요약 리스트 (시간, 거래처, 구분)
                     summary = my_history[['작업시간', '거래처명', '구분']].drop_duplicates().sort_values(by='작업시간', ascending=False)
                     for _, row in summary.head(5).iterrows():
                         with st.expander(f"{row['작업시간']} | {row['구분']}"):
                             st.write(f"거래처: {row['거래처명']}")
-                            # [핵심] 삭제 기능
                             if st.button("🗑️ 삭제", key=f"del_{row['작업시간']}"):
                                 new_hist = history_all[history_all['작업시간'] != row['작업시간']]
                                 conn.update(worksheet="History", data=new_hist)
                                 st.success("기록이 삭제되었습니다.")
                                 st.rerun()
-                else: st.write("저장된 기록이 없습니다.")
-        except: st.write("'History' 탭을 생성해주세요.")
+                else: st.write("작업 기록이 없습니다.")
+            else: st.write("공문서 상태입니다. [저장] 시 양식이 자동 생성됩니다.")
+        except: st.write("History 탭 확인 필요")
         
         st.divider()
         st.session_state.fee_presets = st.multiselect("수수료 프리셋 (%)", [0, 6, 13, 15, 20], default=st.session_state.fee_presets)
@@ -183,7 +190,7 @@ else:
                 st.session_state.data['원가'] = pd.to_numeric(shared_data['판매가'], errors='coerce').fillna(0)
                 st.session_state.data = run_calculation_engine(st.session_state.data, st.session_state.calc_mode)
                 log_history("수신: 업체 A로부터 반영", st.session_state.target_company)
-                st.success("A업체의 단가가 성공적으로 반영 및 기록되었습니다.")
+                st.success("A업체의 단가가 반영 및 기록되었습니다.")
             except: st.error("전송된 데이터를 찾을 수 없습니다.")
 
     st.data_editor(
@@ -207,8 +214,9 @@ else:
             try:
                 target_sheet = "A_Work" if st.session_state.role == "A" else "B_Work"
                 conn.update(worksheet=target_sheet, data=st.session_state.data)
+                # [자동화] 저장 시 빈 시트에 항목명을 자동으로 포함하여 기록
                 log_history("자체 저장", st.session_state.target_company)
-                st.success(f"'{st.session_state.target_company}' 기록이 저장되었습니다!")
+                st.success(f"'{st.session_state.target_company}' 저장 및 히스토리 기록 완료!")
             except Exception as e: st.error(f"저장 실패: {str(e)}")
             
     with c2:
@@ -216,7 +224,7 @@ else:
             if st.button("📤 업체 B에게 단가 전송"):
                 conn.update(worksheet="Share_A_to_B", data=st.session_state.data)
                 log_history("송신: 업체 B향 확정 단가", st.session_state.target_company)
-                st.warning("B업체에게 현재 판매가를 전송 및 기록했습니다.")
+                st.warning("단가 전송 및 이력이 기록되었습니다.")
     with c3:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
