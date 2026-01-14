@@ -32,7 +32,7 @@ try:
 except:
     pass
 
-# --- 3. 고성능 계산 엔진 함수 (기존 로직 100% 유지) ---
+# --- 3. 고성능 계산 엔진 함수 (기존 기능 100% 유지) ---
 def run_calculation_engine(df, mode):
     temp_df = df.copy()
     for i, row in temp_df.iterrows():
@@ -60,16 +60,17 @@ def run_calculation_engine(df, mode):
             continue
     return temp_df
 
-# --- 4. 데이터 수정 핸들러 (포커스 유지 및 정렬 제어) ---
+# --- 4. 데이터 수정 핸들러 (포커스 유지 최적화 반영) ---
 def on_data_change():
+    """사용자가 입력할 때 계산과 정렬을 수행하지만, 불필요한 리런을 최소화함"""
     state = st.session_state["main_editor"]
     df = st.session_state.data.copy()
-    needs_reorder = False # 정렬 필요 여부 플래그
+    needs_reorder = False 
     
     # 1. 수정사항 반영
     for row_idx, changes in state["edited_rows"].items():
         for col, val in changes.items():
-            # [핵심] 순서가 바뀐 경우에만 정렬 플래그 활성화
+            # 순서가 바뀐 경우에만 정렬 플래그 활성화
             if col == "순서":
                 new_order = int(val)
                 old_order = df.iloc[row_idx]['순서']
@@ -91,18 +92,19 @@ def on_data_change():
             else:
                 df.iloc[row_idx, df.columns.get_loc(col)] = val
 
-    # 2. 추가 행 처리
+    # 2. 행 추가 처리
     for row in state["added_rows"]:
         new_row = pd.Series({'순서': len(df)+1, '품목': '', '수수료%': 0, '원가': 0, '마진%': 0, '목표마진%': 0})
         df = pd.concat([df, new_row.to_frame().T], ignore_index=True)
         needs_reorder = True
 
-    # 3. [전략적 정렬] 순서 번호가 바뀌었을 때만 리스트 재배치 (포커스 유지의 핵심)
+    # 3. 전략적 정렬: 데이터의 구조(순서)가 바뀐 경우에만 재배치
     if needs_reorder:
         df = df.sort_values(by=['순서', '품목']).reset_index(drop=True)
         df['순서'] = range(1, len(df) + 1)
     
-    # 4. 최종 계산 엔진 가동 및 저장
+    # 4. 최종 계산 엔진 가동 및 세션 업데이트
+    # st.rerun()을 명시적으로 호출하지 않음으로써 Streamlit의 자동 포커스 복원 기능을 활용함
     st.session_state.data = run_calculation_engine(df, st.session_state.calc_mode)
 
 # --- 5. UI 섹션 ---
@@ -122,7 +124,8 @@ with st.sidebar:
 st.title(f"📊 프라이싱랩 프로 - {st.session_state.user_type} 작업공간")
 
 st.subheader("📝 가격 산출 시트")
-# 에디터 호출
+
+# 에디터 호출: key와 on_change의 조합으로 포커스 유지를 극대화
 st.data_editor(
     st.session_state.data,
     key="main_editor",
