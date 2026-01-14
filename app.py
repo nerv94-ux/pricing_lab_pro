@@ -7,6 +7,7 @@ import io
 # --- 1. 페이지 설정 및 초기화 ---
 st.set_page_config(page_title="프라이싱랩 프로 (Pricing Lab Pro)", layout="wide")
 
+# 세션 상태 초기화 (데이터 정체성 고정의 핵심)
 if 'data' not in st.session_state:
     st.session_state.data = pd.DataFrame({
         '순서': [1, 2],
@@ -32,7 +33,7 @@ try:
 except:
     pass
 
-# --- 3. 고성능 계산 엔진 함수 (기존 기능 100% 유지) ---
+# --- 3. 고성능 계산 엔진 (기존 로직 100% 유지) ---
 def run_calculation_engine(df, mode):
     temp_df = df.copy()
     for i, row in temp_df.iterrows():
@@ -42,10 +43,13 @@ def run_calculation_engine(df, mode):
             margin_pct = float(row['마진%']) / 100
             target_pct = float(row['목표마진%']) / 100
             
+            # 판매가 계산 수식
             if mode == "판매가 기준":
+                # $Selling Price = \frac{Cost}{1 - Margin \% - Fee \%}$
                 denom = (1 - margin_pct - fee_pct)
                 selling_price = cost / denom if denom > 0 else 0
             else:
+                # $Selling Price = \frac{Cost \times (1 + Margin \%)}{1 - Fee \%}$
                 selling_price = (cost * (1 + margin_pct)) / (1 - fee_pct) if (1 - fee_pct) > 0 else 0
             
             fee_amt = selling_price * fee_pct
@@ -60,9 +64,8 @@ def run_calculation_engine(df, mode):
             continue
     return temp_df
 
-# --- 4. 데이터 수정 핸들러 (포커스 유지 최적화 반영) ---
+# --- 4. 데이터 수정 및 포커스 유지 핸들러 ---
 def on_data_change():
-    """사용자가 입력할 때 계산과 정렬을 수행하지만, 불필요한 리런을 최소화함"""
     state = st.session_state["main_editor"]
     df = st.session_state.data.copy()
     needs_reorder = False 
@@ -70,7 +73,7 @@ def on_data_change():
     # 1. 수정사항 반영
     for row_idx, changes in state["edited_rows"].items():
         for col, val in changes.items():
-            # 순서가 바뀐 경우에만 정렬 플래그 활성화
+            # 순서 변경 시에만 '자리 양보' 및 '재정렬' 수행
             if col == "순서":
                 new_order = int(val)
                 old_order = df.iloc[row_idx]['순서']
@@ -79,6 +82,7 @@ def on_data_change():
                 df.iloc[row_idx, df.columns.get_loc('순서')] = new_order
                 needs_reorder = True 
             
+            # 판매가 직접 수정 시 마진% 역산 (계산 엔진 핵심 유지)
             elif col == "판매가":
                 cost = float(df.iloc[row_idx]['원가'])
                 fee_p = float(df.iloc[row_idx]['수수료%']) / 100
@@ -98,13 +102,13 @@ def on_data_change():
         df = pd.concat([df, new_row.to_frame().T], ignore_index=True)
         needs_reorder = True
 
-    # 3. 전략적 정렬: 데이터의 구조(순서)가 바뀐 경우에만 재배치
+    # 3. [최종 해결책] 데이터 정체성 고정 정렬
+    # '순서'가 바뀌지 않았다면 정렬을 생략하여 브라우저의 셀 포커스 유지를 도움
     if needs_reorder:
         df = df.sort_values(by=['순서', '품목']).reset_index(drop=True)
         df['순서'] = range(1, len(df) + 1)
     
-    # 4. 최종 계산 엔진 가동 및 세션 업데이트
-    # st.rerun()을 명시적으로 호출하지 않음으로써 Streamlit의 자동 포커스 복원 기능을 활용함
+    # 4. 최종 계산 엔진 가동 및 세션 데이터 동기화
     st.session_state.data = run_calculation_engine(df, st.session_state.calc_mode)
 
 # --- 5. UI 섹션 ---
@@ -125,7 +129,7 @@ st.title(f"📊 프라이싱랩 프로 - {st.session_state.user_type} 작업공�
 
 st.subheader("📝 가격 산출 시트")
 
-# 에디터 호출: key와 on_change의 조합으로 포커스 유지를 극대화
+# 에디터 호출 (고정 키 'main_editor'를 통해 데이터 정체성 유지)
 st.data_editor(
     st.session_state.data,
     key="main_editor",
