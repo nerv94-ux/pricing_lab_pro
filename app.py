@@ -4,25 +4,33 @@ from streamlit_gsheets import GSheetsConnection
 from datetime import datetime
 import io
 
-# --- 1. 페이지 설정 및 초기화 ---
+# --- 1. 페이지 설정 및 프리미엄 디자인 (CSS) ---
 st.set_page_config(page_title="프라이싱랩 프로 (Pricing Lab Pro)", layout="wide")
+
+# 전문적인 디자인을 위한 CSS 주입
+st.markdown("""
+    <style>
+    .main { background-color: #f8f9fa; }
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; border-left: 5px solid #1E5631; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .stButton>button { border-radius: 5px; font-weight: 600; }
+    .stDataFrame { border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+    h1 { color: #1E5631; font-weight: 800; }
+    div[data-testid="stExpander"] { border: 1px solid #e0e0e0; border-radius: 10px; }
+    </style>
+    """, unsafe_allow_html=True)
 
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
     st.error(f"구글 시트 인증 오류: {str(e)}")
 
-# 세션 상태 초기화
-if 'role' not in st.session_state:
-    st.session_state.role = None 
-if 'target_company' not in st.session_state:
-    st.session_state.target_company = "일반거래처"
-if 'calc_mode' not in st.session_state:
-    st.session_state.calc_mode = "판매가 기준"
-if 'fee_presets' not in st.session_state:
-    st.session_state.fee_presets = [0, 6, 13, 15, 20]
+# 세션 상태 초기화 (기존 유지)
+if 'role' not in st.session_state: st.session_state.role = None 
+if 'target_company' not in st.session_state: st.session_state.target_company = "일반거래처"
+if 'calc_mode' not in st.session_state: st.session_state.calc_mode = "판매가 기준"
+if 'fee_presets' not in st.session_state: st.session_state.fee_presets = [0, 6, 13, 15, 20]
 
-# --- 2. 데이터 로드 및 자동 세척 함수 (100% 유지) ---
+# --- 2. 데이터 로드 및 자동 세척 함수 (기존 로직 100% 유지) ---
 def load_data(worksheet_name="A_Work"):
     try:
         existing_data = conn.read(worksheet=worksheet_name, ttl=0)
@@ -43,10 +51,10 @@ def load_data(worksheet_name="A_Work"):
         '수수료%': [0, 0], '수수료금액': [0.0, 0.0], '판매가': [0.0, 0.0]
     })
 
-# --- 3. [수정] 고성능 계산 엔진 (빈 칸 자동 0 처리) ---
+# --- 3. [수정] 고성능 계산 엔진 (빈 칸 자동 0 처리 및 무한 행 지원) ---
 def run_calculation_engine(df, mode):
     temp_df = df.copy()
-    # 계산 전 숫자형 컬럼들의 빈 값을 0으로 미리 채움 (3행 이후 멈춤 현상 해결 핵심)
+    # 계산 전 숫자형 컬럼 보정 (3행 이후 빈 칸 에러 해결 핵심)
     num_cols = ['원가', '판매가', '마진%', '목표마진%', '수수료%']
     for col in num_cols:
         if col in temp_df.columns:
@@ -74,7 +82,6 @@ def run_calculation_engine(df, mode):
                     selling_price = (cost * (1 + margin_pct)) / (1 - fee_pct) if (1 - fee_pct) > 0 else 0
                 temp_df.at[i, '판매가'] = round(selling_price, 0)
             
-            # 파생 수치 계산
             selling_price = temp_df.at[i, '판매가']
             cost = temp_df.at[i, '원가']
             fee_amt = selling_price * fee_pct
@@ -87,7 +94,7 @@ def run_calculation_engine(df, mode):
         except: continue
     return temp_df
 
-# --- 4. 데이터 수정 핸들러 (100% 유지) ---
+# --- 4. 데이터 수정 핸들러 (기존 로직 100% 유지) ---
 def on_data_change():
     state = st.session_state["main_editor"]
     df = st.session_state.data.copy()
@@ -116,7 +123,7 @@ def on_data_change():
     df['순서'] = range(1, len(df) + 1)
     st.session_state.data = run_calculation_engine(df, st.session_state.calc_mode)
 
-# --- 5. 히스토리 로깅 함수 (기능 유지) ---
+# --- 5. 히스토리 로깅 및 자동 엔진 ---
 def log_history(action, target_company):
     try:
         history_df = st.session_state.data.copy()
@@ -129,99 +136,115 @@ def log_history(action, target_company):
             new_history = pd.concat([current_history, history_df], ignore_index=True)
         except: new_history = history_df
         conn.update(worksheet="History", data=new_history)
-    except Exception as e: st.error(f"히스토리 기록 실패: {str(e)}")
+    except Exception as e: st.error(f"기록 실패: {str(e)}")
 
-# --- 6. UI 섹션: 게이트웨이 ---
+# --- 6. UI 섹션 ---
 if st.session_state.role is None:
-    st.title("🛡️ 프라이싱랩 프로 - 역할 선택")
-    st.info("작업하실 역할을 선택하세요. 데이터는 업체별로 격리되어 관리됩니다.")
+    st.title("🛡️ 프라이싱랩 프로 2.0")
+    st.subheader("업무 시스템 진입을 위해 역할을 선택해 주세요.")
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🏢 A 업체 (공급사) 진입", use_container_width=True):
+        if st.button("🏢 A 업체 (공급사) 진입", use_container_width=True, type="primary"):
             st.session_state.role = "A"; st.session_state.data = load_data("A_Work"); st.rerun()
     with c2:
-        if st.button("🏪 B 업체 (판매사) 진입", use_container_width=True):
+        if st.button("🏪 B 업체 (판매사) 진입", use_container_width=True, type="primary"):
             st.session_state.role = "B"; st.session_state.data = load_data("B_Work"); st.rerun()
 
 else:
     with st.sidebar:
         st.title(f"🔐 {'공급사 A' if st.session_state.role == 'A' else '판매사 B'}")
-        st.session_state.target_company = st.text_input("📍 현재 작업 거래처명", value=st.session_state.target_company)
-        if st.button("🚪 로그아웃"): st.session_state.role = None; st.rerun()
+        st.session_state.target_company = st.text_input("📍 현재 작업 거래처", value=st.session_state.target_company)
+        if st.button("🚪 시스템 로그아웃", use_container_width=True): st.session_state.role = None; st.rerun()
         st.divider()
-        st.subheader("📜 히스토리 관리")
+        st.subheader("📜 히스토리 자율 관리")
         try:
             history_all = conn.read(worksheet="History", ttl=0)
-            if not history_all.empty:
+            if history_all is not None and not history_all.empty and '역할' in history_all.columns:
                 my_history = history_all[history_all['역할'] == st.session_state.role]
                 if not my_history.empty:
                     summary = my_history[['작업시간', '거래처명', '구분']].drop_duplicates().sort_values(by='작업시간', ascending=False)
                     for _, row in summary.head(5).iterrows():
-                        with st.expander(f"{row['작업시간']} | {row['구분']}"):
-                            st.write(f"거래처: {row['거래처명']}")
-                            if st.button("🗑️ 삭제", key=f"del_{row['작업시간']}"):
+                        with st.expander(f"🕒 {row['작업시간'][:16]} | {row['구분']}"):
+                            st.caption(f"거래처: {row['거래처명']}")
+                            if st.button("🗑️ 기록 삭제", key=f"del_{row['작업시간']}"):
                                 new_hist = history_all[history_all['작업시간'] != row['작업시간']]
                                 conn.update(worksheet="History", data=new_hist)
-                                st.success("기록이 삭제되었습니다."); st.rerun()
-                else: st.write("저장된 기록이 없습니다.")
-        except: st.write("'History' 탭을 생성해주세요.")
+                                st.rerun()
+                else: st.write("기록이 없습니다.")
+        except: st.write("History 시트를 확인하세요.")
         st.divider()
         st.session_state.fee_presets = st.multiselect("수수료 프리셋 (%)", [0, 6, 13, 15, 20], default=st.session_state.fee_presets)
         new_mode = st.radio("마진 계산 기준", ["판매가 기준", "원가 기준"], index=0 if st.session_state.calc_mode == "판매가 기준" else 1)
         if new_mode != st.session_state.calc_mode:
             st.session_state.calc_mode = new_mode
-            st.session_state.data = run_calculation_engine(st.session_state.data, new_mode)
-            st.rerun()
+            st.session_state.data = run_calculation_engine(st.session_state.data, new_mode); st.rerun()
 
-    st.title(f"📊 {st.session_state.target_company} 작업공간")
+    # --- 메인 작업공간 대시보드 디자인 ---
+    st.title(f"📊 {st.session_state.target_company} 비즈니스 대시보드")
     
+    # 상단 요약 지표 (KPI Cards)
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    with kpi1:
+        st.metric("총 등록 품목", f"{len(st.session_state.data)}건")
+    with kpi2:
+        avg_margin = st.session_state.data['마진%'].mean()
+        st.metric("평균 마진율", f"{avg_margin:.2f}%")
+    with kpi3:
+        total_profit = st.session_state.data['마진금액'].sum()
+        st.metric("예상 총 마진", f"{int(total_profit):,}원")
+    with kpi4:
+        st.metric("계산 기준", st.session_state.calc_mode)
+
+    st.divider()
+
     if st.session_state.role == "B":
-        if st.button("📥 A업체 최신 단가 수신"):
+        if st.button("📥 A업체 최신 단가 수신 (공급가 반영)", type="primary"):
             try:
                 shared_data = conn.read(worksheet="Share_A_to_B", ttl=0)
                 st.session_state.data['원가'] = pd.to_numeric(shared_data['판매가'], errors='coerce').fillna(0)
                 st.session_state.data = run_calculation_engine(st.session_state.data, st.session_state.calc_mode)
                 log_history("수신: 업체 A로부터 반영", st.session_state.target_company)
-                st.success("A업체의 단가가 반영 및 기록되었습니다.")
-            except: st.error("전송된 데이터를 찾을 수 없습니다.")
+                st.success("A업체의 단가가 성공적으로 반영되었습니다.")
+            except: st.error("데이터를 찾을 수 없습니다.")
 
+    # 메인 데이터 에디터 (디자인 강화)
     st.data_editor(
         st.session_state.data, key="main_editor", on_change=on_data_change, num_rows="dynamic", use_container_width=True, hide_index=True,
         column_config={
-            "순서": st.column_config.NumberColumn("순서", format="%d"),
-            "역산": st.column_config.CheckboxColumn("역산"),
-            "수수료%": st.column_config.SelectboxColumn("수수료%", options=st.session_state.fee_presets),
-            "마진%": st.column_config.NumberColumn("마진%", format="%.2f%%"),
-            "판매가": st.column_config.NumberColumn("판매가", format="%d"),
-            "마진금액": st.column_config.NumberColumn("마진금액", disabled=True),
-            "수수료금액": st.column_config.NumberColumn("수수료금액", disabled=True),
-            "목표마진대비금액": st.column_config.NumberColumn("목표마진대비금액", disabled=True),
+            "순서": st.column_config.NumberColumn("No", format="%d", width="small"),
+            "역산": st.column_config.CheckboxColumn("🔄역산"),
+            "품목": st.column_config.TextColumn("📦 품목명", width="large"),
+            "수수료%": st.column_config.SelectboxColumn("💳 수수료", options=st.session_state.fee_presets),
+            "마진%": st.column_config.NumberColumn("📈 마진%", format="%.2f%%"),
+            "판매가": st.column_config.NumberColumn("💰 판매가", format="₩%d"),
+            "마진금액": st.column_config.NumberColumn("Profit", disabled=True, format="%d"),
+            "수수료금액": st.column_config.NumberColumn("Fee", disabled=True, format="%d"),
+            "목표마진대비금액": st.column_config.NumberColumn("Gap", disabled=True, format="%d"),
         }
     )
 
+    # 하단 컨트롤 바
     st.divider()
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        if st.button("💾 내 작업공간 저장"):
+        if st.button("💾 현재 작업공간 저장", use_container_width=True, type="primary"):
             try:
                 target_sheet = "A_Work" if st.session_state.role == "A" else "B_Work"
                 conn.update(worksheet=target_sheet, data=st.session_state.data)
                 log_history("자체 저장", st.session_state.target_company)
-                st.success(f"'{st.session_state.target_company}' 기록이 저장되었습니다!")
+                st.success("안전하게 저장되었습니다!")
             except Exception as e: st.error(f"저장 실패: {str(e)}")
-            
     with c2:
         if st.session_state.role == "A":
-            if st.button("📤 업체 B에게 단가 전송"):
+            if st.button("📤 업체 B에게 단가 전송", use_container_width=True):
                 conn.update(worksheet="Share_A_to_B", data=st.session_state.data)
-                log_history("송신: 업체 B향 확정 단가", st.session_state.target_company)
-                st.warning("B업체에게 단가가 전송 및 기록되었습니다.")
+                log_history("송신: 업체 B향 단가 전송", st.session_state.target_company)
+                st.warning("업체 B에게 단가가 전송되었습니다.")
     with c3:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             st.session_state.data.to_excel(writer, index=False)
-        st.download_button("📥 엑셀 출력", data=output.getvalue(), file_name=f"Price_{st.session_state.target_company}.xlsx")
+        st.download_button("📥 엑셀 보고서 출력", data=output.getvalue(), file_name=f"Price_Report_{st.session_state.target_company}.xlsx", use_container_width=True)
     with c4:
-        if st.button("🔄 최신 동기화"):
-            st.session_state.data = load_data("A_Work" if st.session_state.role == "A" else "B_Work")
-            st.rerun()
+        if st.button("🔄 최신 동기화", use_container_width=True):
+            st.session_state.data = load_data("A_Work" if st.session_state.role == "A" else "B_Work"); st.rerun()
