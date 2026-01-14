@@ -12,24 +12,38 @@ try:
 except Exception as e:
     st.error(f"구글 시트 인증 오류: {str(e)}")
 
-# [중요] 역할 및 상태 관리
 if 'role' not in st.session_state:
     st.session_state.role = None 
 if 'target_company' not in st.session_state:
-    st.session_state.target_company = "일반거래처" # 상세 업체명 초기화
+    st.session_state.target_company = "일반거래처"
 if 'calc_mode' not in st.session_state:
     st.session_state.calc_mode = "판매가 기준"
 if 'fee_presets' not in st.session_state:
     st.session_state.fee_presets = [0, 6, 13, 15, 20]
 
-# --- 2. 데이터 로드 함수 (기존 기능 유지) ---
+# --- 2. [수정] 데이터 로드 및 자동 세척 함수 ---
 def load_data(worksheet_name="A_Work"):
     try:
         existing_data = conn.read(worksheet=worksheet_name, ttl=0)
         if existing_data is not None and not existing_data.empty:
-            return existing_data
+            df = existing_data.copy()
+            
+            # [세척 로직] 1. 역산 컬럼 보정 (에러 원천 차단)
+            if '역산' not in df.columns:
+                df['역산'] = False
+            df['역산'] = df['역산'].fillna(False).astype(bool)
+            
+            # [세척 로직] 2. 숫자형 컬럼 보정 (결측치 0 처리)
+            num_cols = ['순서', '원가', '판매가', '마진%', '목표마진%', '수수료%']
+            for col in num_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
+            return df
     except:
         pass
+    
+    # 데이터가 없거나 에러 시 기본 구조
     return pd.DataFrame({
         '순서': [1, 2], '역산': [False, False], '품목': ['유기농 당근', '유기농 양파'],
         '규격': ['1kg', '500g'], '원가': [1000, 2000], '목표마진%': [20.0, 20.0],
@@ -111,10 +125,8 @@ if st.session_state.role is None:
             st.rerun()
 
 else:
-    # 메인 작업창 사이드바
     with st.sidebar:
         st.title(f"🔐 {'공급사 A' if st.session_state.role == 'A' else '판매사 B'}")
-        # [신규] 상세 거래처명 입력
         st.session_state.target_company = st.text_input("📍 현재 작업 거래처명", value=st.session_state.target_company)
         
         if st.button("🚪 로그아웃 (초기화면)"):
@@ -122,25 +134,20 @@ else:
             st.rerun()
         st.divider()
         
-        # [신규] 히스토리 불러오기 기능
         st.subheader("📜 히스토리 불러오기")
         try:
             history_all = conn.read(worksheet="History", ttl=0)
             if not history_all.empty:
-                # 현재 업체(A or B)의 기록만 필터링
                 my_history = history_all[history_all['역할'] == st.session_state.role]
                 if not my_history.empty:
-                    # 거래처명별로 묶어서 시간순 표시
                     history_list = my_history.sort_values(by='작업시간', ascending=False)
                     selected_record = st.selectbox("과거 기록 선택", 
                                                    history_list['작업시간'].tolist(),
                                                    format_func=lambda x: f"[{history_list[history_list['작업시간']==x]['거래처명'].values[0]}] {x}")
                     if st.button("📂 선택 기록 불러오기"):
-                        # 선택된 시간의 데이터를 JSON이나 특정 방식으로 파싱하여 로드 (간략화를 위해 CurrentWork 방식 준용)
                         st.info("선택한 시점의 데이터를 복원 중입니다...")
-                        # 실제 구현 시 History 시트의 구조에 따라 필터링 로직 추가
                 else: st.write("저장된 기록이 없습니다.")
-        except: st.write("히스토리 기능을 활성화하려면 'History' 시트를 만드세요.")
+        except: st.write("히스토리 활성화를 위해 'History' 시트를 만드세요.")
         
         st.divider()
         st.session_state.fee_presets = st.multiselect("수수료 프리셋 (%)", [0, 6, 13, 15, 20], default=st.session_state.fee_presets)
@@ -152,14 +159,15 @@ else:
 
     st.title(f"📊 {st.session_state.target_company} 작업공간 ({'A 업체' if st.session_state.role == 'A' else 'B 업체'})")
     
-    # [기존 로직 유지] B업체 전용 릴레이
+    # [수정] B업체 전용 릴레이 수신 시에도 데이터 세척 적용
     if st.session_state.role == "B":
         if st.button("📥 A업체 최신 단가 수신 (A 판매가 → B 원가)"):
             try:
                 shared_data = conn.read(worksheet="Share_A_to_B", ttl=0)
-                st.session_state.data['원가'] = shared_data['판매가']
+                # 수신된 판매가를 숫자로 강제 변환하여 B의 원가에 주입
+                st.session_state.data['원가'] = pd.to_numeric(shared_data['판매가'], errors='coerce').fillna(0)
                 st.session_state.data = run_calculation_engine(st.session_state.data, st.session_state.calc_mode)
-                st.success("A업체의 공급가가 원가로 반영되었습니다.")
+                st.success("A업체의 단가가 원가로 안전하게 반영되었습니다.")
             except: st.error("전송된 데이터를 찾을 수 없습니다.")
 
     st.data_editor(
@@ -176,7 +184,6 @@ else:
         }
     )
 
-    # --- 6. 컨트롤 섹션 (히스토리 저장 로직 강화) ---
     st.divider()
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -185,17 +192,13 @@ else:
                 target_sheet = "A_Work" if st.session_state.role == "A" else "B_Work"
                 conn.update(worksheet=target_sheet, data=st.session_state.data)
                 
-                # [신규] 히스토리 시트에 거래처별 누적 기록
                 history_row = st.session_state.data.copy()
                 history_row['작업시간'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 history_row['거래처명'] = st.session_state.target_company
                 history_row['역할'] = st.session_state.role
-                
-                # 구글 시트 'History' 탭에 데이터 추가 (Append)
-                # 실제 운영 시 gsheets 라이브러리의 append 기능을 활용하거나 전체를 다시 씁니다.
                 conn.update(worksheet="History", data=history_row) 
                 
-                st.success(f"'{st.session_state.target_company}' 기록이 히스토리에 저장되었습니다!")
+                st.success(f"'{st.session_state.target_company}' 기록이 저장되었습니다!")
             except Exception as e: st.error(f"저장 실패: {str(e)}")
             
     with c2:
