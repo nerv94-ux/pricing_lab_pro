@@ -7,7 +7,6 @@ import io
 # --- 1. 페이지 설정 및 초기화 ---
 st.set_page_config(page_title="프라이싱랩 프로 (Pricing Lab Pro)", layout="wide")
 
-# 세션 상태 초기화 (데이터 정체성 고정의 핵심)
 if 'data' not in st.session_state:
     st.session_state.data = pd.DataFrame({
         '순서': [1, 2],
@@ -33,7 +32,7 @@ try:
 except:
     pass
 
-# --- 3. 고성능 계산 엔진 (기존 로직 100% 유지) ---
+# --- 3. 고성능 계산 엔진 함수 (기존 로직 100% 유지) ---
 def run_calculation_engine(df, mode):
     temp_df = df.copy()
     for i, row in temp_df.iterrows():
@@ -43,13 +42,10 @@ def run_calculation_engine(df, mode):
             margin_pct = float(row['마진%']) / 100
             target_pct = float(row['목표마진%']) / 100
             
-            # 판매가 계산 수식
             if mode == "판매가 기준":
-                # $Selling Price = \frac{Cost}{1 - Margin \% - Fee \%}$
                 denom = (1 - margin_pct - fee_pct)
                 selling_price = cost / denom if denom > 0 else 0
             else:
-                # $Selling Price = \frac{Cost \times (1 + Margin \%)}{1 - Fee \%}$
                 selling_price = (cost * (1 + margin_pct)) / (1 - fee_pct) if (1 - fee_pct) > 0 else 0
             
             fee_amt = selling_price * fee_pct
@@ -70,10 +66,8 @@ def on_data_change():
     df = st.session_state.data.copy()
     needs_reorder = False 
     
-    # 1. 수정사항 반영
     for row_idx, changes in state["edited_rows"].items():
         for col, val in changes.items():
-            # 순서 변경 시에만 '자리 양보' 및 '재정렬' 수행
             if col == "순서":
                 new_order = int(val)
                 old_order = df.iloc[row_idx]['순서']
@@ -82,7 +76,6 @@ def on_data_change():
                 df.iloc[row_idx, df.columns.get_loc('순서')] = new_order
                 needs_reorder = True 
             
-            # 판매가 직접 수정 시 마진% 역산 (계산 엔진 핵심 유지)
             elif col == "판매가":
                 cost = float(df.iloc[row_idx]['원가'])
                 fee_p = float(df.iloc[row_idx]['수수료%']) / 100
@@ -96,28 +89,48 @@ def on_data_change():
             else:
                 df.iloc[row_idx, df.columns.get_loc(col)] = val
 
-    # 2. 행 추가 처리
     for row in state["added_rows"]:
         new_row = pd.Series({'순서': len(df)+1, '품목': '', '수수료%': 0, '원가': 0, '마진%': 0, '목표마진%': 0})
         df = pd.concat([df, new_row.to_frame().T], ignore_index=True)
         needs_reorder = True
 
-    # 3. [최종 해결책] 데이터 정체성 고정 정렬
-    # '순서'가 바뀌지 않았다면 정렬을 생략하여 브라우저의 셀 포커스 유지를 도움
     if needs_reorder:
         df = df.sort_values(by=['순서', '품목']).reset_index(drop=True)
         df['순서'] = range(1, len(df) + 1)
     
-    # 4. 최종 계산 엔진 가동 및 세션 데이터 동기화
     st.session_state.data = run_calculation_engine(df, st.session_state.calc_mode)
 
-# --- 5. UI 섹션 ---
+# --- 5. [신규 추가] 표 영역 격리(Fragment) 함수 ---
+# 이 영역 내부에서 발생하는 '엔터'와 '계산'은 페이지 전체를 새로고침하지 않습니다.
+@st.fragment
+def pricing_table_fragment():
+    st.subheader("📝 가격 산출 시트")
+    st.data_editor(
+        st.session_state.data,
+        key="main_editor",
+        on_change=on_data_change,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "순서": st.column_config.NumberColumn("순서", format="%d"),
+            "품목": st.column_config.TextColumn("품목"),
+            "수수료%": st.column_config.SelectboxColumn("수수료%", options=st.session_state.fee_presets if 'fee_presets' in st.session_state else [0, 6, 13, 15, 20]),
+            "마진%": st.column_config.NumberColumn("마진%", format="%.2f%%"),
+            "판매가": st.column_config.NumberColumn("판매가", format="%d"),
+            "마진금액": st.column_config.NumberColumn("마진금액", disabled=True),
+            "수수료금액": st.column_config.NumberColumn("수수료금액", disabled=True),
+            "목표마진대비금액": st.column_config.NumberColumn("목표마진대비금액", disabled=True),
+        }
+    )
+
+# --- 6. UI 섹션 ---
 with st.sidebar:
     st.title("🔐 로그인")
     st.session_state.user_type = st.radio("업체를 선택하세요", ["업체 A", "업체 B"], index=0 if st.session_state.user_type == "업체 A" else 1)
     st.divider()
     st.title("⚙️ 설정 (Presets)")
-    fee_list = st.multiselect("수수료 프리셋 (%)", [0, 6, 13, 15, 20], default=[0, 6, 13, 15, 20])
+    st.session_state.fee_presets = st.multiselect("수수료 프리셋 (%)", [0, 6, 13, 15, 20], default=[0, 6, 13, 15, 20])
     st.divider()
     new_mode = st.radio("마진 계산 기준", ["판매가 기준", "원가 기준"], index=0 if st.session_state.calc_mode == "판매가 기준" else 1)
     if new_mode != st.session_state.calc_mode:
@@ -127,29 +140,10 @@ with st.sidebar:
 
 st.title(f"📊 프라이싱랩 프로 - {st.session_state.user_type} 작업공간")
 
-st.subheader("📝 가격 산출 시트")
+# 격리된 표 실행
+pricing_table_fragment()
 
-# 에디터 호출 (고정 키 'main_editor'를 통해 데이터 정체성 유지)
-st.data_editor(
-    st.session_state.data,
-    key="main_editor",
-    on_change=on_data_change,
-    num_rows="dynamic",
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "순서": st.column_config.NumberColumn("순서", format="%d"),
-        "품목": st.column_config.TextColumn("품목"),
-        "수수료%": st.column_config.SelectboxColumn("수수료%", options=fee_list),
-        "마진%": st.column_config.NumberColumn("마진%", format="%.2f%%"),
-        "판매가": st.column_config.NumberColumn("판매가", format="%d"),
-        "마진금액": st.column_config.NumberColumn("마진금액", disabled=True),
-        "수수료금액": st.column_config.NumberColumn("수수료금액", disabled=True),
-        "목표마진대비금액": st.column_config.NumberColumn("목표마진대비금액", disabled=True),
-    }
-)
-
-# --- 6. 하단 컨트롤 섹션 ---
+# --- 7. 하단 컨트롤 섹션 ---
 st.divider()
 c1, c2, c3, c4 = st.columns(4)
 with c1:
