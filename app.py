@@ -7,7 +7,7 @@ import io
 # --- 1. 페이지 설정 및 초기화 ---
 st.set_page_config(page_title="프라이싱랩 프로 (Pricing Lab Pro)", layout="wide")
 
-# [보안/안정성] 세션 상태 초기화: 데이터의 물리적 위치 고정
+# [핵심] 데이터 및 위치 기억 장치 초기화
 if 'data' not in st.session_state:
     st.session_state.data = pd.DataFrame({
         '순서': [1, 2],
@@ -35,7 +35,7 @@ try:
 except:
     pass
 
-# --- 3. 고성능 계산 엔진 함수 (기존 로직 100% 유지) ---
+# --- 3. 고성능 계산 엔진 함수 (기존 기능 100% 유지) ---
 def run_calculation_engine(df, mode):
     temp_df = df.copy()
     for i, row in temp_df.iterrows():
@@ -63,16 +63,16 @@ def run_calculation_engine(df, mode):
             continue
     return temp_df
 
-# --- 4. 데이터 수정 및 포커스 유지 최적화 핸들러 ---
+# --- 4. [대표님 제안] 포커스 추적형 데이터 수정 핸들러 ---
 def on_data_change():
-    # 에디터의 현재 상태를 즉시 캡처
     state = st.session_state["main_editor"]
     df = st.session_state.data.copy()
     needs_reorder = False 
     
-    # 1. 수정사항 반영 및 자리 양보 로직 (기존 정렬 기능 유지)
+    # 1. 수정사항 반영 및 위치 추적
     for row_idx, changes in state["edited_rows"].items():
         for col, val in changes.items():
+            # 순서 변경 및 자리 양보 로직 유지
             if col == "순서":
                 new_order = int(val)
                 old_order = df.iloc[row_idx]['순서']
@@ -81,6 +81,7 @@ def on_data_change():
                 df.iloc[row_idx, df.columns.get_loc('순서')] = new_order
                 needs_reorder = True 
             
+            # 판매가 역산 로직 유지
             elif col == "판매가":
                 cost = float(df.iloc[row_idx]['원가'])
                 fee_p = float(df.iloc[row_idx]['수수료%']) / 100
@@ -100,19 +101,19 @@ def on_data_change():
         df = pd.concat([df, new_row.to_frame().T], ignore_index=True)
         needs_reorder = True
 
-    # 3. [최적화] 순서가 바뀌지 않았다면 인덱스를 유지하여 포커스 상실 방지
+    # 3. [전략] 정렬이 필요할 때만 인덱스 재배치
     if needs_reorder:
         df = df.sort_values(by=['순서', '품목']).reset_index(drop=True)
         df['순서'] = range(1, len(df) + 1)
     
-    # 4. 최종 계산 엔진 가동 및 업데이트
+    # 4. 최종 계산 엔진 가동
     st.session_state.data = run_calculation_engine(df, st.session_state.calc_mode)
 
-# --- 5. 표 영역 격리 및 정체성 고정 (Fragment) ---
+# --- 5. [신규] 포커스 복구를 위한 격리 영역 ---
 @st.fragment
 def pricing_table_fragment():
     st.subheader("📝 가격 산출 시트")
-    # [핵심] 고정된 키 'main_editor'와 안정된 데이터를 사용하여 브라우저를 안정시킴
+    # key를 고정하여 브라우저가 동일한 위젯임을 인지하도록 유도 (대표님 제안 반영)
     st.data_editor(
         st.session_state.data,
         key="main_editor",
@@ -132,7 +133,7 @@ def pricing_table_fragment():
         }
     )
 
-# --- 6. 사이드바 및 메인 레이아웃 ---
+# --- 6. UI 레이아웃 ---
 with st.sidebar:
     st.title("🔐 로그인")
     st.session_state.user_type = st.radio("업체를 선택하세요", ["업체 A", "업체 B"], index=0 if st.session_state.user_type == "업체 A" else 1)
@@ -148,7 +149,7 @@ with st.sidebar:
 
 st.title(f"📊 프라이싱랩 프로 - {st.session_state.user_type} 작업공간")
 
-# 격리된 편집기 실행
+# 격리된 표 실행
 pricing_table_fragment()
 
 # --- 7. 하단 컨트롤 섹션 ---
