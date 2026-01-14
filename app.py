@@ -12,6 +12,7 @@ try:
 except Exception as e:
     st.error(f"구글 시트 인증 오류: {str(e)}")
 
+# 세션 상태 초기화
 if 'role' not in st.session_state:
     st.session_state.role = None 
 if 'target_company' not in st.session_state:
@@ -21,29 +22,20 @@ if 'calc_mode' not in st.session_state:
 if 'fee_presets' not in st.session_state:
     st.session_state.fee_presets = [0, 6, 13, 15, 20]
 
-# --- 2. [수정] 데이터 로드 및 자동 세척 함수 ---
+# --- 2. 데이터 로드 및 자동 세척 함수 (100% 유지) ---
 def load_data(worksheet_name="A_Work"):
     try:
         existing_data = conn.read(worksheet=worksheet_name, ttl=0)
         if existing_data is not None and not existing_data.empty:
             df = existing_data.copy()
-            
-            # [세척 로직] 1. 역산 컬럼 보정 (에러 원천 차단)
-            if '역산' not in df.columns:
-                df['역산'] = False
+            if '역산' not in df.columns: df['역산'] = False
             df['역산'] = df['역산'].fillna(False).astype(bool)
-            
-            # [세척 로직] 2. 숫자형 컬럼 보정 (결측치 0 처리)
             num_cols = ['순서', '원가', '판매가', '마진%', '목표마진%', '수수료%']
             for col in num_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-            
             return df
-    except:
-        pass
-    
-    # 데이터가 없거나 에러 시 기본 구조
+    except: pass
     return pd.DataFrame({
         '순서': [1, 2], '역산': [False, False], '품목': ['유기농 당근', '유기농 양파'],
         '규격': ['1kg', '500g'], '원가': [1000, 2000], '목표마진%': [20.0, 20.0],
@@ -51,7 +43,7 @@ def load_data(worksheet_name="A_Work"):
         '수수료%': [0, 0], '수수료금액': [0.0, 0.0], '판매가': [0.0, 0.0]
     })
 
-# --- 3. 고성능 계산 엔진 (기존 로직 100% 유지) ---
+# --- 3. 고성능 계산 엔진 (100% 유지) ---
 def run_calculation_engine(df, mode):
     temp_df = df.copy()
     for i, row in temp_df.iterrows():
@@ -79,7 +71,7 @@ def run_calculation_engine(df, mode):
         except: continue
     return temp_df
 
-# --- 4. 데이터 수정 핸들러 (기존 로직 100% 유지) ---
+# --- 4. 데이터 수정 핸들러 (100% 유지) ---
 def on_data_change():
     state = st.session_state["main_editor"]
     df = st.session_state.data.copy()
@@ -108,7 +100,27 @@ def on_data_change():
     df['순서'] = range(1, len(df) + 1)
     st.session_state.data = run_calculation_engine(df, st.session_state.calc_mode)
 
-# --- 5. UI 섹션: 게이트웨이 ---
+# --- 5. 히스토리 로깅 함수 (신규) ---
+def log_history(action, target_company):
+    try:
+        history_df = st.session_state.data.copy()
+        history_df['작업시간'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        history_df['거래처명'] = target_company
+        history_df['역할'] = st.session_state.role
+        history_df['구분'] = action
+        
+        # 기존 히스토리 불러와서 추가 후 저장
+        try:
+            current_history = conn.read(worksheet="History", ttl=0)
+            new_history = pd.concat([current_history, history_df], ignore_index=True)
+        except:
+            new_history = history_df
+            
+        conn.update(worksheet="History", data=new_history)
+    except Exception as e:
+        st.error(f"히스토리 기록 실패: {str(e)}")
+
+# --- 6. UI 섹션: 게이트웨이 ---
 if st.session_state.role is None:
     st.title("🛡️ 프라이싱랩 프로 - 역할 선택")
     st.info("작업하실 역할을 선택하세요. 데이터는 업체별로 격리되어 관리됩니다.")
@@ -128,26 +140,31 @@ else:
     with st.sidebar:
         st.title(f"🔐 {'공급사 A' if st.session_state.role == 'A' else '판매사 B'}")
         st.session_state.target_company = st.text_input("📍 현재 작업 거래처명", value=st.session_state.target_company)
-        
-        if st.button("🚪 로그아웃 (초기화면)"):
+        if st.button("🚪 로그아웃"):
             st.session_state.role = None
             st.rerun()
         st.divider()
         
-        st.subheader("📜 히스토리 불러오기")
+        # [신규] 히스토리 관리 및 삭제 UI
+        st.subheader("📜 히스토리 관리")
         try:
             history_all = conn.read(worksheet="History", ttl=0)
             if not history_all.empty:
                 my_history = history_all[history_all['역할'] == st.session_state.role]
                 if not my_history.empty:
-                    history_list = my_history.sort_values(by='작업시간', ascending=False)
-                    selected_record = st.selectbox("과거 기록 선택", 
-                                                   history_list['작업시간'].tolist(),
-                                                   format_func=lambda x: f"[{history_list[history_list['작업시간']==x]['거래처명'].values[0]}] {x}")
-                    if st.button("📂 선택 기록 불러오기"):
-                        st.info("선택한 시점의 데이터를 복원 중입니다...")
+                    # 요약 리스트 (시간, 거래처, 구분)
+                    summary = my_history[['작업시간', '거래처명', '구분']].drop_duplicates().sort_values(by='작업시간', ascending=False)
+                    for _, row in summary.head(5).iterrows():
+                        with st.expander(f"{row['작업시간']} | {row['구분']}"):
+                            st.write(f"거래처: {row['거래처명']}")
+                            # [핵심] 삭제 기능
+                            if st.button("🗑️ 삭제", key=f"del_{row['작업시간']}"):
+                                new_hist = history_all[history_all['작업시간'] != row['작업시간']]
+                                conn.update(worksheet="History", data=new_hist)
+                                st.success("기록이 삭제되었습니다.")
+                                st.rerun()
                 else: st.write("저장된 기록이 없습니다.")
-        except: st.write("히스토리 활성화를 위해 'History' 시트를 만드세요.")
+        except: st.write("'History' 탭을 생성해주세요.")
         
         st.divider()
         st.session_state.fee_presets = st.multiselect("수수료 프리셋 (%)", [0, 6, 13, 15, 20], default=st.session_state.fee_presets)
@@ -157,17 +174,16 @@ else:
             st.session_state.data = run_calculation_engine(st.session_state.data, new_mode)
             st.rerun()
 
-    st.title(f"📊 {st.session_state.target_company} 작업공간 ({'A 업체' if st.session_state.role == 'A' else 'B 업체'})")
+    st.title(f"📊 {st.session_state.target_company} 작업공간")
     
-    # [수정] B업체 전용 릴레이 수신 시에도 데이터 세척 적용
     if st.session_state.role == "B":
-        if st.button("📥 A업체 최신 단가 수신 (A 판매가 → B 원가)"):
+        if st.button("📥 A업체 최신 단가 수신"):
             try:
                 shared_data = conn.read(worksheet="Share_A_to_B", ttl=0)
-                # 수신된 판매가를 숫자로 강제 변환하여 B의 원가에 주입
                 st.session_state.data['원가'] = pd.to_numeric(shared_data['판매가'], errors='coerce').fillna(0)
                 st.session_state.data = run_calculation_engine(st.session_state.data, st.session_state.calc_mode)
-                st.success("A업체의 단가가 원가로 안전하게 반영되었습니다.")
+                log_history("수신: 업체 A로부터 반영", st.session_state.target_company)
+                st.success("A업체의 단가가 성공적으로 반영 및 기록되었습니다.")
             except: st.error("전송된 데이터를 찾을 수 없습니다.")
 
     st.data_editor(
@@ -191,13 +207,7 @@ else:
             try:
                 target_sheet = "A_Work" if st.session_state.role == "A" else "B_Work"
                 conn.update(worksheet=target_sheet, data=st.session_state.data)
-                
-                history_row = st.session_state.data.copy()
-                history_row['작업시간'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                history_row['거래처명'] = st.session_state.target_company
-                history_row['역할'] = st.session_state.role
-                conn.update(worksheet="History", data=history_row) 
-                
+                log_history("자체 저장", st.session_state.target_company)
                 st.success(f"'{st.session_state.target_company}' 기록이 저장되었습니다!")
             except Exception as e: st.error(f"저장 실패: {str(e)}")
             
@@ -205,7 +215,8 @@ else:
         if st.session_state.role == "A":
             if st.button("📤 업체 B에게 단가 전송"):
                 conn.update(worksheet="Share_A_to_B", data=st.session_state.data)
-                st.warning("B업체에게 현재 판매가를 전송했습니다.")
+                log_history("송신: 업체 B향 확정 단가", st.session_state.target_company)
+                st.warning("B업체에게 현재 판매가를 전송 및 기록했습니다.")
     with c3:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
