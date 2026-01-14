@@ -7,24 +7,23 @@ import io
 # --- 1. 페이지 설정 및 초기화 ---
 st.set_page_config(page_title="프라이싱랩 프로 (Pricing Lab Pro)", layout="wide")
 
-# 구글 시트 연결 설정 (secrets.toml 설정 필요)
+# 구글 시트 연결 설정 (secrets.toml에 등록된 service_account 정보 사용)
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
-    st.error("구글 시트 연결에 실패했습니다. 설정을 확인해주세요.")
+    st.error("구글 시트 연결에 실패했습니다. secrets.toml 설정을 확인해주세요.")
 
 # 세션 상태 초기화
 if 'user_type' not in st.session_state:
-    st.session_state.user_type = "업체 A"
+    st.session_state.user_type = "업체명 입력" # 기본값 변경
 if 'calc_mode' not in st.session_state:
     st.session_state.calc_mode = "판매가 기준"
 if 'fee_presets' not in st.session_state:
     st.session_state.fee_presets = [0, 6, 13, 15, 20]
 
-# [변경] 초기 데이터 로드: 구글 시트에서 먼저 읽어오고 실패시 기본값 사용
+# 초기 데이터 로드: 구글 시트 우선 로드
 if 'data' not in st.session_state:
     try:
-        # 'CurrentWork' 시트에서 데이터를 읽어옴 (없을 경우 에러 처리)
         existing_data = conn.read(worksheet="CurrentWork", ttl=0)
         if existing_data is not None and not existing_data.empty:
             st.session_state.data = existing_data
@@ -131,8 +130,9 @@ def on_data_change():
 
 # --- 4. UI 및 레이아웃 ---
 with st.sidebar:
-    st.title("🔐 로그인")
-    st.session_state.user_type = st.radio("업체를 선택하세요", ["업체 A", "업체 B"], index=0 if st.session_state.user_type == "업체 A" else 1)
+    st.title("🔐 작업자 인증")
+    # [수정] 라디오 버튼 대신 텍스트 입력으로 변경하여 업체명 자유 기입 가능
+    st.session_state.user_type = st.text_input("업체명을 직접 입력하세요", value=st.session_state.user_type)
     st.divider()
     st.title("⚙️ 설정 (Presets)")
     st.session_state.fee_presets = st.multiselect("수수료 프리셋 (%)", [0, 6, 13, 15, 20], default=st.session_state.fee_presets)
@@ -166,49 +166,47 @@ st.data_editor(
     }
 )
 
-# --- 5. 컨트롤 섹션 (구글 시트 연동 로직 이식) ---
+# --- 5. 컨트롤 섹션 (인증 보강 저장 로직) ---
 st.divider()
 c1, c2, c3, c4 = st.columns(4)
 
 with c1:
     if st.button("💾 구글 시트에 저장"):
         try:
-            # 현재 시트 업데이트
+            # 1. 현재 시트 업데이트 (Service Account 인증으로 권한 획득)
             conn.update(worksheet="CurrentWork", data=st.session_state.data)
             
-            # 히스토리 기록 (로그용)
+            # 2. 히스토리 기록 로그 생성
             history_df = st.session_state.data.copy()
             history_df['작업시간'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            history_df['업체'] = st.session_state.user_type
+            history_df['업체명'] = st.session_state.user_type
             
-            # 히스토리 시트에 추가 (별도 시트 존재 시)
+            # (옵션) 'History' 워크시트가 있다면 추가 기록 가능
             # conn.update(worksheet="History", data=history_df) 
             
-            st.success("구글 클라우드에 실시간 동기화되었습니다!")
+            st.success(f"[{st.session_state.user_type}] 데이터가 클라우드에 안전하게 저장되었습니다.")
         except Exception as e:
-            st.error(f"저장 실패: {str(e)}")
+            st.error(f"저장 실패: {str(e)}\n'CurrentWork' 탭이 있는지 확인하고, 서비스 계정 이메일을 시트에 공유했는지 확인하세요.")
 
 with c2:
-    if st.session_state.user_type == "업체 A":
-        if st.button("📤 업체 B에게 단가 전송"):
-            try:
-                # 업체 B가 사용하는 시트 영역이나 별도 시트에 업데이트
-                conn.update(worksheet="For_Vendor_B", data=st.session_state.data)
-                st.warning("업체 B의 작업 공간으로 데이터가 전송되었습니다.")
-            except:
-                st.error("전송 실패")
+    if st.button("📤 공유 공간으로 전송"):
+        try:
+            conn.update(worksheet="B_Share", data=st.session_state.data)
+            st.warning("상대 업체와의 공유 시트(B_Share)로 전송되었습니다.")
+        except:
+            st.error("전송 실패: 'B_Share' 탭을 찾을 수 없습니다.")
 
 with c3:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         st.session_state.data.to_excel(writer, index=False, sheet_name='Price_Lab')
-    st.download_button("📥 엑셀로 출력", data=output.getvalue(), file_name=f"Pricing_{datetime.now().strftime('%m%d')}.xlsx")
+    st.download_button("📥 엑셀로 출력", data=output.getvalue(), file_name=f"Price_{datetime.now().strftime('%m%d')}.xlsx")
 
 with c4:
-    if st.button("🔄 마지막 작업 불러오기"):
+    if st.button("🔄 최신 데이터 동기화"):
         try:
-            # 강제로 다시 읽어오기
             st.session_state.data = conn.read(worksheet="CurrentWork", ttl=0)
+            st.success("최신 데이터를 성공적으로 불러왔습니다.")
             st.rerun()
         except:
-            st.info("불러올 수 있는 히스토리가 없습니다.")
+            st.info("불러올 수 있는 데이터가 없습니다.")
