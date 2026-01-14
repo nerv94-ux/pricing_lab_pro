@@ -32,7 +32,7 @@ try:
 except:
     pass
 
-# --- 3. 고성능 계산 엔진 함수 (기존 로직 100% 유지) ---
+# --- 3. 고성능 계산 엔진 함수 (기존 기능 100% 유지) ---
 def run_calculation_engine(df, mode):
     temp_df = df.copy()
     for i, row in temp_df.iterrows():
@@ -58,18 +58,25 @@ def run_calculation_engine(df, mode):
             temp_df.at[i, '판매가'] = round(selling_price, 0)
         except:
             continue
-    # 정렬은 엔진 외부(on_data_change)에서 제어하도록 변경하여 충돌 방지
     return temp_df
 
-# --- 4. 데이터 수정 및 정렬 핸들러 (수정된 핵심 로직) ---
+# --- 4. 데이터 수정 및 자동 자리 양보 정렬 핸들러 (수정된 핵심 부분) ---
 def on_data_change():
     state = st.session_state["main_editor"]
     df = st.session_state.data.copy()
     
-    # 1. 수정사항 반영
+    # 1. 수정사항 반영 및 자리 양보 로직
     for row_idx, changes in state["edited_rows"].items():
         for col, val in changes.items():
-            if col == "판매가":
+            if col == "순서":
+                new_order = int(val)
+                old_order = df.iloc[row_idx]['순서']
+                # 새로운 번호가 들어오면 기존 번호들을 밀어냄 (자리 양보)
+                if new_order <= old_order:
+                    df.loc[df['순서'] >= new_order, '순서'] += 1
+                df.iloc[row_idx, df.columns.get_loc('순서')] = new_order
+            
+            elif col == "판매가":
                 cost = float(df.iloc[row_idx]['원가'])
                 fee_p = float(df.iloc[row_idx]['수수료%']) / 100
                 new_price = float(val)
@@ -82,16 +89,16 @@ def on_data_change():
             else:
                 df.iloc[row_idx, df.columns.get_loc(col)] = val
 
-    # 2. 추가/삭제 처리
+    # 2. 추가 행 처리
     for row in state["added_rows"]:
         new_row = pd.Series({'순서': len(df)+1, '품목': '', '수수료%': 0, '원가': 0, '마진%': 0, '목표마진%': 0})
         df = pd.concat([df, new_row.to_frame().T], ignore_index=True)
 
-    # 3. [수정 포인트] 정밀 정렬 로직
-    # 단순히 정렬만 하는 것이 아니라, 번호 순서대로 확실히 재배치하고 인덱스를 초기화함
-    df = df.sort_values(by=['순서', '품목'], ascending=[True, True]).reset_index(drop=True)
+    # 3. 정렬 및 번호 재정의 (순차적 번호 부여로 중복 제거)
+    df = df.sort_values(by=['순서', '품목']).reset_index(drop=True)
+    df['순서'] = range(1, len(df) + 1)
     
-    # 4. 최종 계산 엔진 가동 및 저장
+    # 4. 엔진 가동 및 저장
     st.session_state.data = run_calculation_engine(df, st.session_state.calc_mode)
 
 # --- 5. UI 섹션 ---
@@ -111,6 +118,7 @@ with st.sidebar:
 st.title(f"📊 프라이싱랩 프로 - {st.session_state.user_type} 작업공간")
 
 st.subheader("📝 가격 산출 시트")
+# 에디터 호출 (on_change를 통해 즉각적인 정렬 및 계산 보장)
 st.data_editor(
     st.session_state.data,
     key="main_editor",
@@ -135,7 +143,7 @@ st.divider()
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     if st.button("💾 구글 시트에 저장"):
-        st.success("히스토리에 안전하게 저장되었습니다.")
+        st.success("데이터가 안전하게 저장되었습니다.")
 with c2:
     if st.session_state.user_type == "업체 A":
         if st.button("📤 업체 B에게 단가 전송"):
