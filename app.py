@@ -7,6 +7,7 @@ import io
 # --- 1. 페이지 설정 및 초기화 ---
 st.set_page_config(page_title="프라이싱랩 프로 (Pricing Lab Pro)", layout="wide")
 
+# [보안/안정성] 세션 상태 초기화: 데이터의 물리적 위치 고정
 if 'data' not in st.session_state:
     st.session_state.data = pd.DataFrame({
         '순서': [1, 2],
@@ -25,6 +26,8 @@ if 'user_type' not in st.session_state:
     st.session_state.user_type = "업체 A"
 if 'calc_mode' not in st.session_state:
     st.session_state.calc_mode = "판매가 기준"
+if 'fee_presets' not in st.session_state:
+    st.session_state.fee_presets = [0, 6, 13, 15, 20]
 
 # --- 2. 구글 시트 연결 ---
 try:
@@ -60,12 +63,14 @@ def run_calculation_engine(df, mode):
             continue
     return temp_df
 
-# --- 4. 데이터 수정 및 포커스 유지 핸들러 ---
+# --- 4. 데이터 수정 및 포커스 유지 최적화 핸들러 ---
 def on_data_change():
+    # 에디터의 현재 상태를 즉시 캡처
     state = st.session_state["main_editor"]
     df = st.session_state.data.copy()
     needs_reorder = False 
     
+    # 1. 수정사항 반영 및 자리 양보 로직 (기존 정렬 기능 유지)
     for row_idx, changes in state["edited_rows"].items():
         for col, val in changes.items():
             if col == "순서":
@@ -89,22 +94,25 @@ def on_data_change():
             else:
                 df.iloc[row_idx, df.columns.get_loc(col)] = val
 
+    # 2. 행 추가 처리
     for row in state["added_rows"]:
         new_row = pd.Series({'순서': len(df)+1, '품목': '', '수수료%': 0, '원가': 0, '마진%': 0, '목표마진%': 0})
         df = pd.concat([df, new_row.to_frame().T], ignore_index=True)
         needs_reorder = True
 
+    # 3. [최적화] 순서가 바뀌지 않았다면 인덱스를 유지하여 포커스 상실 방지
     if needs_reorder:
         df = df.sort_values(by=['순서', '품목']).reset_index(drop=True)
         df['순서'] = range(1, len(df) + 1)
     
+    # 4. 최종 계산 엔진 가동 및 업데이트
     st.session_state.data = run_calculation_engine(df, st.session_state.calc_mode)
 
-# --- 5. [신규 추가] 표 영역 격리(Fragment) 함수 ---
-# 이 영역 내부에서 발생하는 '엔터'와 '계산'은 페이지 전체를 새로고침하지 않습니다.
+# --- 5. 표 영역 격리 및 정체성 고정 (Fragment) ---
 @st.fragment
 def pricing_table_fragment():
     st.subheader("📝 가격 산출 시트")
+    # [핵심] 고정된 키 'main_editor'와 안정된 데이터를 사용하여 브라우저를 안정시킴
     st.data_editor(
         st.session_state.data,
         key="main_editor",
@@ -115,7 +123,7 @@ def pricing_table_fragment():
         column_config={
             "순서": st.column_config.NumberColumn("순서", format="%d"),
             "품목": st.column_config.TextColumn("품목"),
-            "수수료%": st.column_config.SelectboxColumn("수수료%", options=st.session_state.fee_presets if 'fee_presets' in st.session_state else [0, 6, 13, 15, 20]),
+            "수수료%": st.column_config.SelectboxColumn("수수료%", options=st.session_state.fee_presets),
             "마진%": st.column_config.NumberColumn("마진%", format="%.2f%%"),
             "판매가": st.column_config.NumberColumn("판매가", format="%d"),
             "마진금액": st.column_config.NumberColumn("마진금액", disabled=True),
@@ -124,13 +132,13 @@ def pricing_table_fragment():
         }
     )
 
-# --- 6. UI 섹션 ---
+# --- 6. 사이드바 및 메인 레이아웃 ---
 with st.sidebar:
     st.title("🔐 로그인")
     st.session_state.user_type = st.radio("업체를 선택하세요", ["업체 A", "업체 B"], index=0 if st.session_state.user_type == "업체 A" else 1)
     st.divider()
     st.title("⚙️ 설정 (Presets)")
-    st.session_state.fee_presets = st.multiselect("수수료 프리셋 (%)", [0, 6, 13, 15, 20], default=[0, 6, 13, 15, 20])
+    st.session_state.fee_presets = st.multiselect("수수료 프리셋 (%)", [0, 6, 13, 15, 20], default=st.session_state.fee_presets)
     st.divider()
     new_mode = st.radio("마진 계산 기준", ["판매가 기준", "원가 기준"], index=0 if st.session_state.calc_mode == "판매가 기준" else 1)
     if new_mode != st.session_state.calc_mode:
@@ -140,7 +148,7 @@ with st.sidebar:
 
 st.title(f"📊 프라이싱랩 프로 - {st.session_state.user_type} 작업공간")
 
-# 격리된 표 실행
+# 격리된 편집기 실행
 pricing_table_fragment()
 
 # --- 7. 하단 컨트롤 섹션 ---
@@ -160,4 +168,4 @@ with c3:
     st.download_button("📥 엑셀로 출력", data=output.getvalue(), file_name="Pricing_Lab.xlsx")
 with c4:
     if st.button("🔄 마지막 작업 불러오기"):
-        st.info("동기화 중...")
+        st.info("동기화 기능을 준비 중입니다...")
