@@ -32,7 +32,7 @@ try:
 except:
     pass
 
-# --- 3. 고성능 계산 엔진 함수 (기존 기능 100% 유지) ---
+# --- 3. 고성능 계산 엔진 함수 (기존 로직 100% 유지) ---
 def run_calculation_engine(df, mode):
     temp_df = df.copy()
     for i, row in temp_df.iterrows():
@@ -60,21 +60,23 @@ def run_calculation_engine(df, mode):
             continue
     return temp_df
 
-# --- 4. 데이터 수정 및 자동 자리 양보 정렬 핸들러 (수정된 핵심 부분) ---
+# --- 4. 데이터 수정 핸들러 (포커스 유지 및 정렬 제어) ---
 def on_data_change():
     state = st.session_state["main_editor"]
     df = st.session_state.data.copy()
+    needs_reorder = False # 정렬 필요 여부 플래그
     
-    # 1. 수정사항 반영 및 자리 양보 로직
+    # 1. 수정사항 반영
     for row_idx, changes in state["edited_rows"].items():
         for col, val in changes.items():
+            # [핵심] 순서가 바뀐 경우에만 정렬 플래그 활성화
             if col == "순서":
                 new_order = int(val)
                 old_order = df.iloc[row_idx]['순서']
-                # 새로운 번호가 들어오면 기존 번호들을 밀어냄 (자리 양보)
                 if new_order <= old_order:
                     df.loc[df['순서'] >= new_order, '순서'] += 1
                 df.iloc[row_idx, df.columns.get_loc('순서')] = new_order
+                needs_reorder = True 
             
             elif col == "판매가":
                 cost = float(df.iloc[row_idx]['원가'])
@@ -93,12 +95,14 @@ def on_data_change():
     for row in state["added_rows"]:
         new_row = pd.Series({'순서': len(df)+1, '품목': '', '수수료%': 0, '원가': 0, '마진%': 0, '목표마진%': 0})
         df = pd.concat([df, new_row.to_frame().T], ignore_index=True)
+        needs_reorder = True
 
-    # 3. 정렬 및 번호 재정의 (순차적 번호 부여로 중복 제거)
-    df = df.sort_values(by=['순서', '품목']).reset_index(drop=True)
-    df['순서'] = range(1, len(df) + 1)
+    # 3. [전략적 정렬] 순서 번호가 바뀌었을 때만 리스트 재배치 (포커스 유지의 핵심)
+    if needs_reorder:
+        df = df.sort_values(by=['순서', '품목']).reset_index(drop=True)
+        df['순서'] = range(1, len(df) + 1)
     
-    # 4. 엔진 가동 및 저장
+    # 4. 최종 계산 엔진 가동 및 저장
     st.session_state.data = run_calculation_engine(df, st.session_state.calc_mode)
 
 # --- 5. UI 섹션 ---
@@ -118,7 +122,7 @@ with st.sidebar:
 st.title(f"📊 프라이싱랩 프로 - {st.session_state.user_type} 작업공간")
 
 st.subheader("📝 가격 산출 시트")
-# 에디터 호출 (on_change를 통해 즉각적인 정렬 및 계산 보장)
+# 에디터 호출
 st.data_editor(
     st.session_state.data,
     key="main_editor",
